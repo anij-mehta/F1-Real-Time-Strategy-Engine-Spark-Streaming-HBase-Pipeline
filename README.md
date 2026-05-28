@@ -40,12 +40,12 @@ docker-compose up -d
 Expected cluster deployment state:
 ![Cluster Architecture](images/docker-containers.png)
 
-2. Start the Telemetry Stream
+### 2. Start the Telemetry Stream
 ```bash
 python f1_streamer.py
 ```
 
-3. Submit the Spark ML Job
+### 3. Submit the Spark ML Job
 
 Connect to the Spark Master to run the strategy engine:
 ```bash
@@ -58,7 +58,7 @@ spark-submit f1_strategy_gold.py
 Live micro-batch processing logs:
 ![Processing Logs](images/spark-shell-output.png)
 
-4. Query Tactical Triggers
+### 4. Query Tactical Triggers
 
 Monitor the live leaderboard and pit-stop triggers via the HBase shell:
 ```Bash
