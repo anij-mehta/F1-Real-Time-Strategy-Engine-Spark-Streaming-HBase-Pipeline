@@ -1,0 +1,74 @@
+services:
+  # ----------------------------------------
+  # HADOOP SYSTEM (HDFS)
+  # ----------------------------------------
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: namenode
+    networks:
+      - f1-pipeline
+    ports:
+      - "9870:9870"
+    environment:
+      - CLUSTER_NAME=f1-cluster
+    env_file:
+      - ./hadoop.env
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: datanode
+    networks:
+      - f1-pipeline
+    depends_on:
+      - namenode
+    env_file:
+      - ./hadoop.env
+
+  # ----------------------------------------
+  # HBASE SYSTEM
+  # ----------------------------------------
+  hbase:
+    image: harisekhon/hbase:latest
+    container_name: hbase
+    networks:
+      - f1-pipeline
+    ports:
+      - "16010:16010"
+    depends_on:
+      - namenode
+
+  # ----------------------------------------
+  # SPARK SYSTEM (Official Apache Images)
+  # ----------------------------------------
+  spark-master:
+    image: apache/spark:3.5.1
+    container_name: spark-master
+    user: root
+    networks:
+      - f1-pipeline
+    environment:
+      - SPARK_MODE=master
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    volumes:
+      - ./spark_scripts:/opt/spark/work-dir
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+
+  spark-worker:
+    image: apache/spark:3.5.1
+    container_name: spark-worker
+    user: root
+    networks:
+      - f1-pipeline
+    environment:
+      - SPARK_MODE=worker
+    depends_on:
+      - spark-master
+    volumes:
+      - ./spark_scripts:/opt/spark/work-dir
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+
+networks:
+  f1-pipeline:
+    driver: bridge
