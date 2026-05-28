@@ -1,0 +1,2 @@
+# F1-Real-Time-Strategy-Engine-Spark-Streaming-HBase-Pipeline
+A distributed data pipeline built with Apache Spark Streaming, HBase, and Docker to analyze live Formula 1 telemetry. It ingests FastF1 data, filters noise, and applies PySpark MLlib Linear Regression to predict tire degradation and calculate pit-stop windows via a Medallion architecture, enabling sub-second tactical race strategy decisions.
