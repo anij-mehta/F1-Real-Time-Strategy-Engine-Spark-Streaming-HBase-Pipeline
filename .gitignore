@@ -1,3 +1,4 @@
+
 # Python cache
 __pycache__/
 *.py[cod]
@@ -13,10 +14,22 @@ env/
 !.env.example
 *.pem
 *.key
+credentials.json
+secrets.json
+*.p12
+*.pfx
+*.jks
+id_rsa
+id_ed25519
 
-# Logs
+# Logs and test artifacts
 *.log
 logs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
 # Editor and operating system files
 .idea/
