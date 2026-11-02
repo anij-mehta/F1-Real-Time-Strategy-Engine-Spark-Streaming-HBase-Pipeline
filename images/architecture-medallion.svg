@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="650" viewBox="0 0 1320 650" role="img" aria-labelledby="title description">
+  <title id="title">F1 streaming medallion architecture</title>
+  <desc id="description">FastF1 replay streams into Spark Bronze and Silver processing, archives both layers to HDFS, then produces Gold pit decisions for HBase and a Streamlit dashboard.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L0,6 L9,3 z" fill="#42b8ff"/>
+    </marker>
+    <style>
+      .bg { fill: #0b0f14; }
+      .panel { fill: #141c26; stroke: #344355; stroke-width: 2; }
+      .bronze { stroke: #b97a42; }
+      .silver { stroke: #9eacba; }
+      .gold { stroke: #e0b84f; }
+      .store { stroke: #54c994; }
+      .title { fill: #eff6ff; font: 700 24px Arial, sans-serif; }
+      .label { fill: #e6edf3; font: 700 18px Arial, sans-serif; }
+      .text { fill: #aebdca; font: 15px Arial, sans-serif; }
+      .small { fill: #8fa1b4; font: 13px Arial, sans-serif; }
+      .arrow { stroke: #42b8ff; stroke-width: 3; fill: none; marker-end: url(#arrow); }
+      .archive { stroke: #9d88ff; stroke-width: 2.5; stroke-dasharray: 8 7; fill: none; marker-end: url(#arrow); }
+    </style>
+  </defs>
+  <rect class="bg" width="1320" height="650" rx="18"/>
+  <text class="title" x="660" y="48" text-anchor="middle">F1 REAL-TIME STRATEGY ENGINE · MEDALLION PIPELINE</text>
+
+  <rect class="panel" x="40" y="190" width="190" height="145" rx="14"/>
+  <text class="label" x="135" y="225" text-anchor="middle">FastF1</text>
+  <text class="text" x="135" y="255" text-anchor="middle">Race replay</text>
+  <text class="text" x="135" y="280" text-anchor="middle">JSON Lines · TCP</text>
+  <text class="small" x="135" y="310" text-anchor="middle">f1_streamer.py</text>
+
+  <rect class="panel bronze" x="300" y="155" width="220" height="210" rx="14"/>
+  <text class="label" x="410" y="195" text-anchor="middle">BRONZE</text>
+  <text class="text" x="410" y="230" text-anchor="middle">Parse &amp; classify</text>
+  <text class="text" x="410" y="255" text-anchor="middle">Quality metrics</text>
+  <text class="small" x="410" y="315" text-anchor="middle">Spark Structured Streaming</text>
+
+  <rect class="panel silver" x="600" y="155" width="220" height="210" rx="14"/>
+  <text class="label" x="710" y="195" text-anchor="middle">SILVER</text>
+  <text class="text" x="710" y="230" text-anchor="middle">Filter pit / SC / VSC</text>
+  <text class="text" x="710" y="255" text-anchor="middle">Windowed lap features</text>
+  <text class="small" x="710" y="315" text-anchor="middle">Validated Parquet rows</text>
+
+  <rect class="panel gold" x="900" y="155" width="220" height="210" rx="14"/>
+  <text class="label" x="1010" y="195" text-anchor="middle">GOLD</text>
+  <text class="text" x="1010" y="230" text-anchor="middle">MLlib pit probability</text>
+  <text class="text" x="1010" y="255" text-anchor="middle">Decay + cliff decision</text>
+  <text class="small" x="1010" y="315" text-anchor="middle">One driver/window record</text>
+
+  <rect class="panel store" x="1160" y="155" width="135" height="210" rx="14"/>
+  <text class="label" x="1227" y="195" text-anchor="middle">HBase</text>
+  <text class="text" x="1227" y="230" text-anchor="middle">Leaderboard</text>
+  <text class="text" x="1227" y="255" text-anchor="middle">PIT / STAY</text>
+  <text class="small" x="1227" y="315" text-anchor="middle">Thrift</text>
+
+  <path class="arrow" d="M230 262 H292"/>
+  <path class="arrow" d="M520 262 H592"/>
+  <path class="arrow" d="M820 262 H892"/>
+  <path class="arrow" d="M1120 262 H1152"/>
+
+  <rect class="panel" x="420" y="445" width="380" height="125" rx="14" style="stroke:#9d88ff"/>
+  <text class="label" x="610" y="485" text-anchor="middle">HDFS · PARQUET ARCHIVE</text>
+  <text class="text" x="610" y="515" text-anchor="middle">/f1/bronze · raw typed events</text>
+  <text class="text" x="610" y="540" text-anchor="middle">/f1/silver · curated aggregates</text>
+  <path class="archive" d="M410 365 V405 H500 V437"/>
+  <path class="archive" d="M710 365 V437"/>
+
+  <rect class="panel store" x="930" y="445" width="300" height="125" rx="14"/>
+  <text class="label" x="1080" y="485" text-anchor="middle">PIT-WALL DASHBOARD</text>
+  <text class="text" x="1080" y="515" text-anchor="middle">Streamlit · Plotly · port 8501</text>
+  <text class="small" x="1080" y="540" text-anchor="middle">Leaderboard · degradation · health</text>
+  <path class="arrow" d="M1227 365 V405 H1080 V437"/>
+
+  <text class="small" x="48" y="615">Race-grouped ML model is trained from FastF1 history and saved in HDFS under /f1/models.</text>
+</svg>

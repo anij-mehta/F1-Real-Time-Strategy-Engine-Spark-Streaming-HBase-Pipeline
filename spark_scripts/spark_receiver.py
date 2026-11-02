@@ -1,6 +1,7 @@
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import from_json, col
 from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType, BooleanType
+import os
 
 # 1. Initialize Spark Session
 spark = SparkSession.builder \
@@ -24,11 +25,11 @@ schema = StructType([
     StructField("IsPitStop", BooleanType(), True)
 ])
 
-# 3. Connect to Stream 
+# 3. Connect to Stream
 df = spark.readStream \
     .format("socket") \
-    .option("host", "192.168.1.4") \
-    .option("port", 9999) \
+    .option("host", os.getenv("F1_STREAM_HOST", "streamer")) \
+    .option("port", int(os.getenv("F1_STREAM_PORT", "9999"))) \
     .load()
 
 # 4. Process JSON

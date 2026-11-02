@@ -1,0 +1,11 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+exclude = [".fastf1-cache", "spark-warehouse"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"docker/init/init.py" = ["E701", "E702"]
+"docker/spark/wait-for-services.py" = ["E401", "E701", "E702"]

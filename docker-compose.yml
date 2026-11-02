@@ -1,74 +1,189 @@
 services:
-  # ----------------------------------------
-  # HADOOP SYSTEM (HDFS)
-  # ----------------------------------------
   namenode:
     image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
-    container_name: namenode
-    networks:
-      - f1-pipeline
-    ports:
-      - "9870:9870"
-    environment:
-      - CLUSTER_NAME=f1-cluster
-    env_file:
-      - ./hadoop.env
+    networks: [f1-pipeline]
+    ports: ["9870:9870"]
+    environment: { CLUSTER_NAME: f1-cluster }
+    env_file: ./hadoop.env
+    volumes: [hadoop_namenode:/hadoop/dfs/name]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9870/jmx?qry=Hadoop:service=NameNode,name=NameNodeStatus | grep -Eq 'State.*active'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    cpus: 1.0
+    mem_limit: 1024m
 
   datanode:
     image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
-    container_name: datanode
-    networks:
-      - f1-pipeline
-    depends_on:
-      - namenode
-    env_file:
-      - ./hadoop.env
+    networks: [f1-pipeline]
+    depends_on: { namenode: { condition: service_healthy } }
+    environment: { SERVICE_PRECONDITION: "namenode:9870" }
+    env_file: ./hadoop.env
+    volumes: [hadoop_datanode:/hadoop/dfs/data]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9864/ >/dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    cpus: 1.0
+    mem_limit: 1024m
 
-  # ----------------------------------------
-  # HBASE SYSTEM
-  # ----------------------------------------
   hbase:
-    image: harisekhon/hbase:latest
-    container_name: hbase
-    networks:
-      - f1-pipeline
-    ports:
-      - "16010:16010"
-    depends_on:
-      - namenode
+    # The pinned image's no-argument /entrypoint.sh starts ZooKeeper, HBase,
+    # and `hbase-daemon.sh start thrift`; the healthcheck verifies Thrift's port.
+    image: harisekhon/hbase:2.1@sha256:c65ce56799f59fab86eb8995a628c878c28c03189c0fd27285c6ebef4cb016fa
+    entrypoint: ["/entrypoint.sh"]
+    command: []
+    networks: [f1-pipeline]
+    ports: ["16010:16010", "9090:9090"]
+    depends_on: { namenode: { condition: service_healthy } }
+    # No data volume: ZooKeeper state lives in the container, so persisting only
+    # /hbase-data leaves HBase unable to start after `docker compose down`.
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/$(hostname)/16000 && exec 4<>/dev/tcp/127.0.0.1/9090'"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 30s
+    cpus: 1.0
+    mem_limit: 1536m
 
-  # ----------------------------------------
-  # SPARK SYSTEM (Official Apache Images)
-  # ----------------------------------------
   spark-master:
-    image: apache/spark:3.5.1
-    container_name: spark-master
-    user: root
-    networks:
-      - f1-pipeline
-    environment:
-      - SPARK_MODE=master
-    ports:
-      - "8080:8080"
-      - "7077:7077"
-    volumes:
-      - ./spark_scripts:/opt/spark/work-dir
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    image: f1-spark:3.5.1
+    build: { context: ., dockerfile: docker/spark/Dockerfile }
+    networks: [f1-pipeline]
+    ports: ["8080:8080", "7077:7077"]
+    volumes: [./spark_scripts:/opt/spark/work-dir:ro]
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.master.Master"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8080/ | grep -q 'Spark Master'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    cpus: 1.0
+    mem_limit: 1536m
 
   spark-worker:
-    image: apache/spark:3.5.1
-    container_name: spark-worker
-    user: root
-    networks:
-      - f1-pipeline
-    environment:
-      - SPARK_MODE=worker
+    image: f1-spark:3.5.1
+    build: { context: ., dockerfile: docker/spark/Dockerfile }
+    networks: [f1-pipeline]
+    depends_on: { spark-master: { condition: service_healthy } }
+    ports: ["8081:8081"]
+    volumes: [./spark_scripts:/opt/spark/work-dir:ro]
+    command: ["/opt/spark/bin/spark-class", "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:8081/ | grep -q 'Spark Worker'"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    cpus: 1.0
+    mem_limit: 1536m
+
+  init:
+    image: f1-init:1.0.0
+    build: { context: ., dockerfile: docker/init/Dockerfile }
+    profiles: [tools]
+    networks: [f1-pipeline]
     depends_on:
-      - spark-master
+      namenode: { condition: service_healthy }
+      datanode: { condition: service_healthy }
+      hbase: { condition: service_healthy }
+    environment:
+      HDFS_WEB_URL: http://namenode:9870
+      HBASE_HOST: hbase
+      HBASE_PORT: "9090"
+      READY_TIMEOUT_SECONDS: "300"
+    restart: "no"
+    cpus: 0.5
+    mem_limit: 256m
+
+  
+  streamer:
+    image: f1-streamer:1.0.0
+    build: { context: ., dockerfile: docker/streamer/Dockerfile }
+    profiles: [tools]
+    networks: [f1-pipeline]
+    depends_on:
+      spark-master: { condition: service_healthy }
+      spark-worker: { condition: service_healthy }
+    environment:
+      F1_USERNAME: ${F1_USERNAME:-}
+      F1_PASSWORD: ${F1_PASSWORD:-}
+      F1_REPLAY_SPEED: ${F1_REPLAY_SPEED:-60}
+      FASTF1_CACHE_DIR: /cache
+    volumes: [fastf1_cache:/cache]
+    command: ["python", "f1_streamer.py"]
+    restart: "no"
+    cpus: 0.5
+    mem_limit: 768m
+
+
+  export-training-data:
+    image: f1-streamer:1.0.0
+    profiles: [tools]
+    networks: [f1-pipeline]
+    environment:
+      F1_USERNAME: ${F1_USERNAME:-}
+      F1_PASSWORD: ${F1_PASSWORD:-}
+      FASTF1_CACHE_DIR: /cache
     volumes:
-      - ./spark_scripts:/opt/spark/work-dir
-    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+      - fastf1_cache:/cache
+      - ./spark_scripts:/opt/spark/work-dir:ro
+      - ./docs:/opt/f1/docs
+    entrypoint: ["python", "/opt/spark/work-dir/training_data.py"]
+    restart: "no"
+    mem_limit: 768m
+
+  spark-submit:
+    image: f1-spark:3.5.1
+    profiles: [tools]
+    networks: [f1-pipeline]
+    depends_on:
+      namenode: { condition: service_healthy }
+      datanode: { condition: service_healthy }
+      hbase: { condition: service_healthy }
+      spark-master: { condition: service_healthy }
+      spark-worker: { condition: service_healthy }
+    environment:
+      F1_STREAM_HOST: streamer
+      F1_STREAM_PORT: "9999"
+      HDFS_WEB_URL: http://namenode:9870
+      HBASE_HOST: hbase
+      HBASE_PORT: "9090"
+      READY_TIMEOUT_SECONDS: "300"
+    volumes:
+      - ./spark_scripts:/opt/spark/work-dir:ro
+      - ./docs:/opt/f1/docs
+    entrypoint: ["/opt/f1/bin/submit-gold.sh"]
+    restart: "no"
+    cpus: 1.0
+    mem_limit: 1536m
+
+  dashboard:
+    image: f1-dashboard:1.0.0
+    build: { context: ., dockerfile: docker/dashboard/Dockerfile }
+    networks: [f1-pipeline]
+    depends_on:
+      hbase: { condition: service_healthy }
+    environment:
+      HBASE_HOST: hbase
+      HBASE_PORT: "9090"
+      F1_RACE_TOTAL_LAPS: "57"
+    ports: ["8501:8501"]
+    restart: unless-stopped
+    cpus: 0.5
+    mem_limit: 768m
 
 networks:
   f1-pipeline:
     driver: bridge
+
+volumes:
+  hadoop_namenode:
+  hadoop_datanode:
+  fastf1_cache:

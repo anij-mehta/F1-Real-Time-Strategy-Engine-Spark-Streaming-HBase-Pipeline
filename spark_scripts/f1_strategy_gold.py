@@ -1,88 +1,132 @@
-from pyspark.sql import SparkSession
-from pyspark.sql.functions import from_json, col, avg, window, current_timestamp
-from pyspark.sql.types import *
-from pyspark.ml.regression import LinearRegression
-from pyspark.ml.feature import VectorAssembler
-import happybase
+"""Run Bronze archival, Silver aggregation, metrics, and Gold HBase prediction."""
+
+from __future__ import annotations
+
 import logging
+import time
+from datetime import datetime
 
-# 1. Setup Spark with MLlib
-spark = SparkSession.builder \
-    .appName("F1-Strategy-Gold") \
-    .master("spark://spark-master:7077") \
-    .getOrCreate()
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, count, lit, max as spark_max, sum as spark_sum, when
 
-spark.sparkContext.setLogLevel("ERROR")
+from config import (
+    APP_NAME,
+    BRONZE_CHECKPOINT_PATH,
+    BRONZE_PARQUET_PATH,
+    SILVER_PARQUET_PATH,
+    SPARK_MASTER,
+    SHUFFLE_PARTITIONS,
+    STREAM_HOST,
+    STREAM_PORT,
+)
+from gold import process_gold_layer
+from hbase_sink import write_pipeline_health
+from silver import build_silver, classify_rows, parse_bronze
 
-# 2. Schema Definition
-schema = StructType([
-    StructField("Driver", StringType(), True),
-    StructField("LapNumber", IntegerType(), True),
-    StructField("GapToAhead", DoubleType(), True),
-    StructField("TyreLife", DoubleType(), True),
-    StructField("IsPitStop", BooleanType(), True)
-])
 
-# 3. [BRONZE] - Ingestion
-raw_stream = spark.readStream \
-    .format("socket") \
-    .option("host", "192.168.1.4") \
-    .option("port", 9999) \
-    .load()
+LOGGER = logging.getLogger(__name__)
 
-# Filter for active racing laps only
-bronze_df = raw_stream.select(from_json(col("value").cast("string"), schema).alias("data")) \
-    .select("data.*") \
-    .filter(col("IsPitStop") == False) \
-    .withColumn("timestamp", current_timestamp())
 
-# 4. [SILVER] - Aggregation (5-second window)
-silver_df = bronze_df.withWatermark("timestamp", "10 seconds") \
-    .groupBy(window(col("timestamp"), "5 seconds"), "Driver") \
-    .agg(avg("GapToAhead").alias("AvgGap"), avg("TyreLife").alias("AvgTyreLife"))
-
-# 5. [GOLD] - MLlib & HBase Upsert
-def process_gold_layer(batch_df, batch_id):
-    if batch_df.count() == 0:
-        return
-
-    # A. Regression Model: Predict decay
+def log_batch_metrics(batch_df, batch_id: int, started_at: float | None = None) -> None:
+    """Emit data-quality counts and processing latency for every input micro-batch."""
+    started_at = time.monotonic() if started_at is None else started_at
+    metrics = (
+        batch_df.agg(
+            count(lit(1)).alias("rows"),
+            spark_sum(when(~col("is_silver_eligible"), lit(1)).otherwise(lit(0))).alias("filtered_rows"),
+            spark_sum(when(col("is_invalid"), lit(1)).otherwise(lit(0))).alias("invalid_rows"),
+            spark_sum(when(col("is_pit_lap"), lit(1)).otherwise(lit(0))).alias("pit_lap_rows"),
+            spark_sum(when(col("is_sc_or_vsc"), lit(1)).otherwise(lit(0))).alias("sc_vsc_rows"),
+            spark_sum(when(col("is_lap_time_outlier"), lit(1)).otherwise(lit(0))).alias("outlier_rows"),
+            spark_max("ReplaySentAt").alias("latest_event_time"),
+        )
+        .first()
+    )
+    event_lag_seconds = None
+    if metrics["latest_event_time"] is not None:
+        event_lag_seconds = (datetime.now() - metrics["latest_event_time"]).total_seconds()
+    LOGGER.info(
+        "Quality batch=%s rows=%s filtered_rows=%s invalid_rows=%s pit_lap_rows=%s "
+        "sc_vsc_rows=%s outlier_rows=%s batch_latency_ms=%.1f event_lag_seconds=%s",
+        batch_id,
+        metrics["rows"],
+        metrics["filtered_rows"],
+        metrics["invalid_rows"],
+        metrics["pit_lap_rows"],
+        metrics["sc_vsc_rows"],
+        metrics["outlier_rows"],
+        (time.monotonic() - started_at) * 1000,
+        None if event_lag_seconds is None else round(event_lag_seconds, 3),
+    )
     try:
-        assembler = VectorAssembler(inputCols=["AvgTyreLife"], outputCol="features")
-        ml_prep = assembler.transform(batch_df)
-        
-        # Simple Linear Regression to find the 'decay rate'
-        lr = LinearRegression(featuresCol="features", labelCol="AvgGap")
-        model = lr.fit(ml_prep)
-        decay_rate = model.coefficients[0]
-        
-        # B. HBase Integration
-        # Connect to Thrift server (default port 9090)
-        connection = happybase.Connection('hbase', port=9090)
-        table = connection.table('f1_leaderboard')
-        
-        for row in batch_df.collect():
-            # Create a unique row key: Driver + Window Start
-            row_key = f"{row['Driver']}_{row['window'].start.strftime('%H%M%S')}"
-            
-            # Identify 'Pit' trigger: If decay is > 0.2s margin
-            trigger = "PIT" if decay_rate > 0.2 else "STAY"
-            
-            table.put(row_key, {
-                b'cf_race:avg_gap': str(row['AvgGap']).encode(),
-                b'cf_race:tyre_life': str(row['AvgTyreLife']).encode(),
-                b'cf_strat:decay': str(decay_rate).encode(),
-                b'cf_strat:decision': trigger.encode()
-            })
-        
-        print(f"✅ Batch {batch_id} processed. Global Decay Rate: {decay_rate:.4f}")
-        connection.close()
-    except Exception as e:
-        print(f"❌ Error in Gold Layer: {e}")
+        write_pipeline_health(
+            (time.monotonic() - started_at) * 1000,
+            int(metrics["rows"] or 0),
+            event_lag_seconds,
+        )
+    except Exception:
+        LOGGER.exception("Could not persist health metrics for Bronze batch=%s", batch_id)
 
-# 6. Start the Stream
-query = silver_df.writeStream \
-    .foreachBatch(process_gold_layer) \
-    .start()
 
-query.awaitTermination()
+def archive_bronze_and_log(batch_df, batch_id: int) -> None:
+    """Persist raw typed telemetry and emit quality metrics in one source query."""
+    started_at = time.monotonic()
+    batch_df.write.mode("append").partitionBy("Driver").parquet(BRONZE_PARQUET_PATH)
+    log_batch_metrics(batch_df, batch_id, started_at)
+
+
+def archive_silver_and_process_gold(batch_df, batch_id: int) -> None:
+    """Persist Silver aggregates before producing the Gold HBase strategy signal."""
+    batch_df.write.mode("append").partitionBy("Driver").parquet(SILVER_PARQUET_PATH)
+    process_gold_layer(batch_df, batch_id)
+
+
+def process_replay_batch(batch_df, batch_id: int) -> None:
+    """Process each socket micro-batch through Bronze, Silver, and Gold."""
+    bronze_batch = classify_rows(parse_bronze(batch_df))
+
+    # Persist Bronze and record quality metrics.
+    archive_bronze_and_log(bronze_batch, batch_id)
+
+    # Derive Silver from the same batch, then persist and process Gold.
+    silver_batch = build_silver(bronze_batch)
+    archive_silver_and_process_gold(silver_batch, batch_id)
+
+
+def start_pipeline() -> None:
+    spark = (
+        SparkSession.builder.appName(APP_NAME)
+        .master(SPARK_MASTER)
+        .config("spark.sql.shuffle.partitions", SHUFFLE_PARTITIONS)
+        .getOrCreate()
+    )
+    spark.sparkContext.setLogLevel("WARN")
+
+    # The socket source cannot recover offsets, so a checkpoint left by an earlier
+    # run makes the restarted query fail ("IndexOutOfBounds ... deleting N").
+    checkpoint = spark._jvm.org.apache.hadoop.fs.Path(BRONZE_CHECKPOINT_PATH + "_single_query")
+    checkpoint.getFileSystem(spark._jsc.hadoopConfiguration()).delete(checkpoint, True)
+
+    raw_stream = (
+        spark.readStream.format("socket")
+        .option("host", STREAM_HOST)
+        .option("port", STREAM_PORT)
+        .load()
+    )
+
+    query = (
+        raw_stream.writeStream
+        .outputMode("append")
+        .foreachBatch(process_replay_batch)
+        # Use a fresh checkpoint because the query structure has changed.
+        .option("checkpointLocation", BRONZE_CHECKPOINT_PATH + "_single_query")
+        .start()
+    )
+
+    LOGGER.info("Started single-query Bronze -> Silver -> Gold pipeline: %s", query.id)
+    query.awaitTermination()
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    start_pipeline()

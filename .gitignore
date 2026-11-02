@@ -1,37 +1,44 @@
-
-# Python cache
+# Python and test tooling
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
 
-# Python virtual environments
+# Environments and local secrets
 .venv/
 venv/
 env/
-
-# Local environment files and secrets
 .env
 .env.*
 !.env.example
-*.pem
-*.key
 credentials.json
 secrets.json
+*.pem
+*.key
 *.p12
 *.pfx
 *.jks
 id_rsa
 id_ed25519
 
-# Logs and test artifacts
+# FastF1 and Spark local state
+.fastf1-cache/
+fastf1-cache/
+spark-warehouse/
+checkpoints/
+**/checkpoints/
+**/checkpoint/
+
+# Generated evaluation artifacts and logs
+docs/evaluation_runs.json
 *.log
 logs/
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.coverage
-htmlcov/
 
-# Editor and operating system files
+# Editors and operating systems
 .idea/
+.vscode/
 Thumbs.db
 .DS_Store
